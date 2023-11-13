@@ -18,7 +18,7 @@ To install and run this service, follow these steps:
 1. **Clone the Repository**
 
    ```bash
-   git clone [[Your Repository URL]](https://github.com/NikhilVerma/debounce-proxy.git)
+   git clone https://github.com/NikhilVerma/debounce-proxy.git
    cd debounce-proxy
    ```
 
@@ -50,3 +50,7 @@ To use the service, send HTTP requests to localhost:3000 with the following quer
 ```bash
 curl -X POST "http://localhost:3000?url=http://example.com&debounceTime=30000"
 ```
+
+## Docker
+
+This repo comes with a `Dockerfile` which you can use to deploy to your cloud environments.
