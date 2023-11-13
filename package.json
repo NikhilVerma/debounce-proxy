@@ -1,0 +1,23 @@
+{
+  "name": "debounce-proxy",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "serve": "pnpm build && pm2-runtime start ./dist/main.js",
+    "dev-docker": "docker build -t debounce_proxy:dev . && docker run -it -p 3000:3000 --rm --name debounce_proxy debounce_proxy:dev"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^20.9.0",
+    "pm2": "^5.3.0",
+    "typescript": "^5.2.2"
+  },
+  "dependencies": {
+    "axios": "^1.6.1",
+    "fastify": "^4.24.3"
+  }
+}
