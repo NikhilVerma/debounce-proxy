@@ -21,7 +21,16 @@ const MAX_RPS_TIME = 5000;
 const DEFAULT_DEBOUNCE_TIME = 5 * 60 * 1000;
 
 const fastify = Fastify({ logger: true });
-const requestMap = new Map<string, RequestRecord>();
+const requestCache = new Map<string, RequestRecord>();
+
+fastify.get("/caches", async (request, reply) => {
+	return reply
+		.status(200)
+		.headers({
+			ContentType: "application/json"
+		})
+		.send(JSON.stringify(Object.fromEntries(requestCache)));
+});
 
 fastify.all("*", async (request, reply) => {
 	const query = request.query as QueryString;
@@ -44,7 +53,7 @@ fastify.all("*", async (request, reply) => {
 
 	const { method, headers } = request.raw;
 	const body = request.body;
-	const key = `${method}:${parsedUrl}`;
+	const cacheKey = `${method}:${parsedUrl}`;
 	const now = Date.now();
 
 	const updatedHeaders = {
@@ -52,33 +61,24 @@ fastify.all("*", async (request, reply) => {
 		Host: parsedUrl.hostname
 	};
 
-	const cacheEntry = requestMap.get(key);
+	const cacheEntry = requestCache.get(cacheKey);
 
-	// Proxy request immediately
 	try {
+		// Request is in cache, invalidate it and log
 		if (cacheEntry && now - cacheEntry.timestamp < cacheEntry.debounceTime) {
 			// Add estimated time to message
 			const estimatedTime = Math.round(
-				(cacheEntry.debounceTime - (now - requestMap.get(key)!.timestamp)) / 1000
+				(cacheEntry.debounceTime - (now - requestCache.get(cacheKey)!.timestamp)) / 1000
 			);
 
-			reply.status(202).send(`Request saved and will be processed in ${estimatedTime}s`);
+			fastify.log.info(
+				`Debounced requested for URL ${cacheEntry.url} will be retried in ${estimatedTime}s`
+			);
+
+			reply.status(202).send(`Request will be processed in ${estimatedTime}s`);
 		} else {
-			const response = await axios({
-				httpsAgent: new https.Agent({
-					rejectUnauthorized: false
-				}),
-				method,
-				url: parsedUrl.href,
-				data: body,
-				headers: updatedHeaders,
-				validateStatus: () => true
-			});
-
-			reply.status(response.status).headers(response.headers).send(response.data);
-
 			// Save request log
-			requestMap.set(key, {
+			requestCache.set(cacheKey, {
 				timestamp: now,
 				method,
 				url: parsedUrl.href,
@@ -86,9 +86,24 @@ fastify.all("*", async (request, reply) => {
 				headers: updatedHeaders,
 				debounceTime
 			});
+
+			// Proxy request immediately
+			const response = await axios({
+				httpsAgent: new https.Agent({
+					rejectUnauthorized: false
+				}),
+				method,
+				url: parsedUrl.href,
+				data: body,
+				headers: updatedHeaders
+			});
+
+			fastify.log.info(`Proxied request for ${cacheKey}`);
+
+			reply.status(response.status).headers(response.headers).send(response.data);
 		}
 	} catch (error) {
-		console.error(JSON.stringify(error));
+		fastify.log.error(error);
 		reply.status(500).send("Error proxying request");
 	}
 });
@@ -97,35 +112,40 @@ fastify.all("*", async (request, reply) => {
 setInterval(() => {
 	const now = Date.now();
 
-	requestMap.forEach(({ debounceTime, timestamp, method, url, headers, body }, key) => {
+	requestCache.forEach(({ debounceTime, timestamp, method, url, headers, body }, cacheKey) => {
 		if (now - timestamp >= debounceTime) {
 			// Execute saved request
 			axios({
+				httpsAgent: new https.Agent({
+					rejectUnauthorized: false
+				}),
 				method: method as any,
 				url: url,
 				data: body,
-				headers: headers
+				headers: headers,
+				validateStatus: () => true
 			})
 				.then(response =>
-					console.log(`Executed delayed request to ${url} with response code: ${response.status}`)
+					fastify.log.info(
+						`Executed delayed request to ${url} with response code: ${response.status}`
+					)
 				)
 				.catch(error => {
-					console.error(JSON.stringify(error));
-					console.error(`Error executing delayed request to ${url}`);
+					fastify.log.error(error);
+					fastify.log.error(`Error executing delayed request to ${url}`);
 				});
 
-			requestMap.delete(key);
+			requestCache.delete(cacheKey);
 		}
 	});
 }, 1000); // Check every second
 
-const start = async () => {
+// Start the server
+(async () => {
 	try {
 		await fastify.listen({ port: 3000, host: "0.0.0.0" });
 	} catch (err) {
 		fastify.log.error(err);
 		process.exit(1);
 	}
-};
-
-start();
+})();

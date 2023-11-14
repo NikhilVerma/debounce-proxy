@@ -18,7 +18,15 @@ const axios_1 = __importDefault(require("axios"));
 const MAX_RPS_TIME = 5000;
 const DEFAULT_DEBOUNCE_TIME = 5 * 60 * 1000;
 const fastify = (0, fastify_1.default)({ logger: true });
-const requestMap = new Map();
+const requestCache = new Map();
+fastify.get("/caches", (request, reply) => __awaiter(void 0, void 0, void 0, function* () {
+    return reply
+        .status(200)
+        .headers({
+        ContentType: "application/json"
+    })
+        .send(JSON.stringify(Object.fromEntries(requestCache)));
+}));
 fastify.all("*", (request, reply) => __awaiter(void 0, void 0, void 0, function* () {
     const query = request.query;
     // Configure time from request query with a default value
@@ -37,31 +45,21 @@ fastify.all("*", (request, reply) => __awaiter(void 0, void 0, void 0, function*
     }
     const { method, headers } = request.raw;
     const body = request.body;
-    const key = `${method}:${parsedUrl}`;
+    const cacheKey = `${method}:${parsedUrl}`;
     const now = Date.now();
     const updatedHeaders = Object.assign(Object.assign({}, headers), { Host: parsedUrl.hostname });
-    const cacheEntry = requestMap.get(key);
-    // Proxy request immediately
+    const cacheEntry = requestCache.get(cacheKey);
     try {
+        // Request is in cache, invalidate it and log
         if (cacheEntry && now - cacheEntry.timestamp < cacheEntry.debounceTime) {
             // Add estimated time to message
-            const estimatedTime = Math.round((cacheEntry.debounceTime - (now - requestMap.get(key).timestamp)) / 1000);
-            reply.status(202).send(`Request saved and will be processed in ${estimatedTime}s`);
+            const estimatedTime = Math.round((cacheEntry.debounceTime - (now - requestCache.get(cacheKey).timestamp)) / 1000);
+            fastify.log.info(`Debounced requested for URL ${cacheEntry.url} will be retried in ${estimatedTime}s`);
+            reply.status(202).send(`Request will be processed in ${estimatedTime}s`);
         }
         else {
-            const response = yield (0, axios_1.default)({
-                httpsAgent: new https_1.default.Agent({
-                    rejectUnauthorized: false
-                }),
-                method,
-                url: parsedUrl.href,
-                data: body,
-                headers: updatedHeaders,
-                validateStatus: () => true
-            });
-            reply.status(response.status).headers(response.headers).send(response.data);
             // Save request log
-            requestMap.set(key, {
+            requestCache.set(cacheKey, {
                 timestamp: now,
                 method,
                 url: parsedUrl.href,
@@ -69,35 +67,52 @@ fastify.all("*", (request, reply) => __awaiter(void 0, void 0, void 0, function*
                 headers: updatedHeaders,
                 debounceTime
             });
+            // Proxy request immediately
+            const response = yield (0, axios_1.default)({
+                httpsAgent: new https_1.default.Agent({
+                    rejectUnauthorized: false
+                }),
+                method,
+                url: parsedUrl.href,
+                data: body,
+                headers: updatedHeaders
+            });
+            fastify.log.info(`Proxied request for ${cacheKey}`);
+            reply.status(response.status).headers(response.headers).send(response.data);
         }
     }
     catch (error) {
-        console.error(JSON.stringify(error));
+        fastify.log.error(error);
         reply.status(500).send("Error proxying request");
     }
 }));
 // Function to periodically check and execute saved requests
 setInterval(() => {
     const now = Date.now();
-    requestMap.forEach(({ debounceTime, timestamp, method, url, headers, body }, key) => {
+    requestCache.forEach(({ debounceTime, timestamp, method, url, headers, body }, cacheKey) => {
         if (now - timestamp >= debounceTime) {
             // Execute saved request
             (0, axios_1.default)({
+                httpsAgent: new https_1.default.Agent({
+                    rejectUnauthorized: false
+                }),
                 method: method,
                 url: url,
                 data: body,
-                headers: headers
+                headers: headers,
+                validateStatus: () => true
             })
-                .then(response => console.log(`Executed delayed request to ${url} with response code: ${response.status}`))
+                .then(response => fastify.log.info(`Executed delayed request to ${url} with response code: ${response.status}`))
                 .catch(error => {
-                console.error(JSON.stringify(error));
-                console.error(`Error executing delayed request to ${url}`);
+                fastify.log.error(error);
+                fastify.log.error(`Error executing delayed request to ${url}`);
             });
-            requestMap.delete(key);
+            requestCache.delete(cacheKey);
         }
     });
 }, 1000); // Check every second
-const start = () => __awaiter(void 0, void 0, void 0, function* () {
+// Start the server
+(() => __awaiter(void 0, void 0, void 0, function* () {
     try {
         yield fastify.listen({ port: 3000, host: "0.0.0.0" });
     }
@@ -105,5 +120,4 @@ const start = () => __awaiter(void 0, void 0, void 0, function* () {
         fastify.log.error(err);
         process.exit(1);
     }
-});
-start();
+}))();
